@@ -8,8 +8,11 @@ RUN apk add --no-cache \
     bash \
     && rm -rf /var/cache/apk/*
 
-# Create a non-root user named "sandbox"
+# Create a non-root user named "sudeep"
 RUN adduser -D -s /bin/bash sudeep
+
+# Workspace mount point must be owned by sudeep so the named volume inherits it
+RUN mkdir -p /workspace && chown sudeep:sudeep /workspace
 
 # Switch to the non-root user
 USER sudeep
