@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(dirname "$0")"
+
+SERVICE=${SERVICE:-sudeep-agent}
+WORKSPACE=${WORKSPACE:-/workspace}
+
+usage() {
+  cat >&2 <<EOF
+usage:
+  sandbox-cp in  <host-src> [container-dest]   host -> ${WORKSPACE}/<dest> (default: ${WORKSPACE}/)
+  sandbox-cp out <container-src> [host-dest]   ${WORKSPACE}/<src> -> host dir (default: .)
+
+container-dest is treated as a directory (rsync-style), created if missing.
+EOF
+  exit 1
+}
+
+ensure_running() {
+  if [ -z "$(docker compose ps -q "$SERVICE")" ]; then
+    echo "starting ${SERVICE}..." >&2
+    docker compose up -d >&2
+  fi
+}
+
+# stream through pv for a progress bar if available (nice for multi-GB datasets)
+stream() {
+  if command -v pv >/dev/null 2>&1; then
+    pv "$@"
+  else
+    cat
+  fi
+}
+
+cmd_in() {
+  local src=${1:?} dest=${2:-}
+  ensure_running
+  src=${src%/}
+  local target=$WORKSPACE
+  [ -n "$dest" ] && target=$WORKSPACE/$dest
+  docker compose exec -T "$SERVICE" mkdir -p "$target"
+  # COPYFILE_DISABLE keeps macOS BSD tar from polluting the volume with ._* AppleDouble files
+  COPYFILE_DISABLE=1 tar -C "$(dirname "$src")" -cf - "$(basename "$src")" \
+    | stream \
+    | docker compose exec -T "$SERVICE" tar xf - -C "$target"
+  echo "copied $(basename "$src") -> ${SERVICE}:${target}/$(basename "$src")"
+}
+
+cmd_out() {
+  local src=${1:?} dest=${2:-.}
+  ensure_running
+  mkdir -p "$dest"
+  docker compose exec -T "$SERVICE" tar cf - -C "$WORKSPACE" "$src" \
+    | stream \
+    | tar -xf - -C "$dest"
+  echo "copied ${SERVICE}:${WORKSPACE}/${src} -> ${dest}"
+}
+
+[ $# -ge 2 ] || usage
+case $1 in
+  in)  shift; cmd_in "$@" ;;
+  out) shift; cmd_out "$@" ;;
+  -h|--help) usage ;;
+  *) usage ;;
+esac
