@@ -1,0 +1,27 @@
+services:
+  hermes:
+    image: nousresearch/hermes-agent:latest
+    container_name: hermes-research
+    # restart: unless-stopped
+    command: gateway run
+
+    ports:
+      - "127.0.0.1:8642:8642" # gateway API
+      - "127.0.0.1:9119:9119" # dashboard (only reached when HERMES_DASHBOARD=1)
+
+    volumes:
+      - ${HOME}/.hermes-research:/opt/data
+
+    env_file:
+      - .env
+
+    environment:
+      HERMES_DASHBOARD: "1"
+      HERMES_DASHBOARD_HOST: "0.0.0.0"
+      HERMES_DASHBOARD_PORT: "9119"
+
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: "2.0"
