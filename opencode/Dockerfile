@@ -8,6 +8,10 @@ RUN apk add --no-cache \
     bash \
     && rm -rf /var/cache/apk/*
 
+COPY gh-askpass /usr/local/bin/gh-askpass
+RUN chmod 0755 /usr/local/bin/gh-askpass \
+    && git config --system url."https://github.com/".insteadOf "git@github.com:"
+
 # Create a non-root user named "sudeep"
 RUN adduser -D -s /bin/bash sudeep
 

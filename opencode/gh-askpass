@@ -1,0 +1,5 @@
+#!/bin/sh
+case "$1" in
+  Username*) echo "x-access-token" ;;
+  Password*) exec cat /run/secrets/github_pat ;;
+esac

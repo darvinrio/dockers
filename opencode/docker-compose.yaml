@@ -13,10 +13,17 @@ services:
     cpus: 2
     ports:
       - "127.0.0.1:4321:4321" # astro
-      - "127.0.0.1:8000:8000" # litestar
+      - "127.0.0.1:8080:8080" # litestar
     volumes:
       - work:/workspace              # holds project-a/, project-b/, etc. via git clone
+    secrets:
+      - source: github_pat
+        target: github_pat
+        uid: "1000"
+        gid: "1000"
+        mode: 0400
     environment:
+      - GIT_ASKPASS=/usr/local/bin/gh-askpass
       - GIT_AUTHOR_NAME=sudeep
       - GIT_AUTHOR_EMAIL=yohermesbot@gmail.com
       - GIT_COMMITTER_NAME=sudeep
@@ -24,3 +31,7 @@ services:
 
 volumes:
   work:
+
+secrets:
+  github_pat:
+    file: ./secrets/github_pat
