@@ -31,7 +31,6 @@ services:
         gid: "1000"
         mode: 0400
     environment:
-      - GIT_ASKPASS=/usr/local/bin/gh-askpass
       - GIT_AUTHOR_NAME=sudeep
       - GIT_AUTHOR_EMAIL=yohermesbot@gmail.com
       - GIT_COMMITTER_NAME=sudeep
