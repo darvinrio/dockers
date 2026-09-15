@@ -18,7 +18,9 @@ RUN apk add --no-cache \
 COPY gh-askpass sandbox-entry /usr/local/bin/
 RUN chmod 0755 /usr/local/bin/gh-askpass /usr/local/bin/sandbox-entry \
     && git config --system url."https://github.com/".insteadOf "git@github.com:" \
-    && git config --system core.askPass /usr/local/bin/gh-askpass
+    && git config --system core.askPass /usr/local/bin/gh-askpass \
+    && git config --system user.name "sudeep" \
+    && git config --system user.email "yohermesbot@gmail.com"
 
 # Create a non-root user named "sudeep"
 RUN adduser -D -s /bin/bash sudeep
