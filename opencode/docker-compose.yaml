@@ -1,6 +1,7 @@
 services:
   sudeep-agent:
-    build: .
+    build:
+      context: .
     stdin_open: true
     tty: true
     tmpfs:
@@ -14,11 +15,18 @@ services:
     ports:
       - "127.0.0.1:4321:4321" # astro
       - "127.0.0.1:8080:8080" # litestar
+      - "127.0.0.1:2222:2222" # dropbear ssh
     volumes:
       - work:/workspace              # holds project-a/, project-b/, etc. via git clone
+      - ssh_keys:/home/sudeep/.ssh   # persists dropbear host key across rebuilds
     secrets:
       - source: github_pat
         target: github_pat
+        uid: "1000"
+        gid: "1000"
+        mode: 0400
+      - source: authorized_keys
+        target: /home/sudeep/.ssh/authorized_keys
         uid: "1000"
         gid: "1000"
         mode: 0400
@@ -31,7 +39,10 @@ services:
 
 volumes:
   work:
+  ssh_keys:
 
 secrets:
   github_pat:
     file: ./secrets/github_pat
+  authorized_keys:
+    file: ./secrets/authorized_keys/opencode_container.pub

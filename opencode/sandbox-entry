@@ -1,0 +1,14 @@
+#!/bin/sh
+# Start dropbear as sudeep: key-only auth, no root or capabilities needed.
+# Host key lives in the persistent "ssh_keys" volume; generated on first run.
+if [ ! -f "$HOME/.ssh/dropbear_host_ed25519" ]; then
+    dropbearkey -t ed25519 -f "$HOME/.ssh/dropbear_host_ed25519"
+fi
+dropbear -r "$HOME/.ssh/dropbear_host_ed25519" -p 2222 -s -P "$HOME/.ssh/dropbear.pid"
+
+# Interactive shell for `compose run`; idle keeper for `compose up -d`.
+if [ -t 0 ]; then
+    exec bash
+else
+    exec sleep infinity
+fi
