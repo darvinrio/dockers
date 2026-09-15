@@ -1,5 +1,6 @@
-# Use a minimal base image
-FROM alpine:3.20
+# Use a minimal base image — digest pin = multi-arch index digest for alpine:3.20
+# (rotate deliberately: docker buildx imagetools inspect alpine:3.20)
+FROM alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
 
 # Install git, openssh-client, bash, curl+tar for the opencode installer,
 # and dropbear for SSH access (runs as sudeep, needs no capabilities)
@@ -34,8 +35,9 @@ USER sudeep
 # Set the working directory
 WORKDIR /home/sudeep
 
-# Install opencode CLI (latest); musl build is auto-detected on Alpine
-RUN curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path \
+# Install opencode CLI, version-pinned (bump deliberately; installer takes -v <x.y.z>)
+ARG OPENCODE_VERSION=1.18.31
+RUN curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path -v "${OPENCODE_VERSION}" \
     && /home/sudeep/.opencode/bin/opencode --version
 ENV PATH="/home/sudeep/.opencode/bin:${PATH}"
 
