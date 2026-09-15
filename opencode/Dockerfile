@@ -14,6 +14,7 @@ RUN apk add --no-cache \
     dropbear \
     libstdc++ \
     libgcc \
+    git-lfs \
     && rm -rf /var/cache/apk/*
 
 COPY gh-askpass sandbox-entry /usr/local/bin/
