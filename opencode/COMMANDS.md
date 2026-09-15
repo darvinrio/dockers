@@ -1,12 +1,12 @@
 # COMMANDS.md — opencode sandbox quick reference
 
-Dockerized dev sandbox: Alpine + git + opencode CLI + dropbear SSH (key-only, port 2222).
+Dockerized dev sandbox: Alpine + git + opencode CLI + bun + uv + dropbear SSH (key-only, port 2222).
 Container user `sudeep`, work volume at `/workspace`, GitHub PAT at `/run/secrets/github_pat`.
 
 ## Build & run
 
 ```sh
-docker compose build                     # build image (installs latest opencode)
+docker compose build                     # build image (installs latest opencode, bun, uv)
 docker compose up -d                     # start persistent container (SSH daemon host)
 docker compose down                      # stop & remove container (volumes survive)
 ```
@@ -61,14 +61,20 @@ opencode --version
 opencode serve           # HTTP server mode (API/SDK)
 ```
 
+## bun & uv (inside container)
+
+```sh
+bun --version && uv --version     # both symlinked into /usr/local/bin
+```
+
+Versions are unpinned — each build installs the latest opencode, bun and uv.
+`docker compose build` pulls whatever is current at build time.
+
 ## Updating opencode
 
 ```sh
 docker compose build && docker compose up -d --force-recreate
 ```
-
-Pin a version instead: replace the `curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path`
-line in the Dockerfile with `bash -s -- --no-modify-path -v <x.y.z>` and rebuild.
 
 ## SSH keys
 
