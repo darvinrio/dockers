@@ -1,8 +1,10 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "provider": {
+  "providers": {
     "openrouter": {
-      "options": {
+      "package": "@opencode/ai/providers/openrouter",
+      "env":["OPENROUTER_API_KEY"],
+      "settings": {
         "apiKey": "{env:OPENROUTER_API_KEY}"
       }
     }
