@@ -152,6 +152,34 @@ agent-browser. `docker compose build` pulls whatever is current at build time.
 docker compose build && docker compose up -d --force-recreate
 ```
 
+The base image pin does not move by itself: each build installs whatever
+opencode/bun/uv are current **and** refreshes the apk packages, but the digest
+in `Dockerfile` still needs a deliberate bump when Alpine cuts a new image. The
+build also fails if a bundled CA store is older than the eMudhra fix
+(opencode 2.2.0 / Bun 1.4.4 / uv 0.13.4), so a failed build means the upstream
+channel rolled back, not that your machine is broken. To force the apk layers
+to re-resolve instead of using the build cache:
+
+```sh
+docker compose build --no-cache
+```
+
+Verify the trust store from inside the container. A nonzero exit alone is not
+a pass — DNS and network failures also exit nonzero — so check the actual
+error: `curl` must exit 60 (`curl: (60) ... SSL certificate problem`) and
+`bun` must reject with a certificate error, not a connection error. The host
+is the community incident tracker, which serves the compromised chains:
+
+```sh
+docker compose run --rm sudeep-agent \
+  sh -c 'curl -sS https://dv-g3b-emudhra.we-have-a-problem.com/; echo "curl exit=$?"'
+docker compose run --rm sudeep-agent \
+  bun -e 'await fetch("https://dv-g3b-emudhra.we-have-a-problem.com/")'
+```
+
+`curl` uses the Alpine bundle; `bun` exercises the embedded store that opencode
+is also compiled with. A 200 from either one means the fix did not land.
+
 ## SSH keys
 
 ```sh

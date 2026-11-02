@@ -62,7 +62,7 @@ Every control below is verifiable; the checklist in §5 confirms each one.
 
 | Control | Where | Why it matters |
 |---|---|---|
-| Non-root user `sudeep` | `Dockerfile:33` | Agent code can't touch root-owned paths; dropbear runs unprivileged (port 2222 > 1024, no caps needed) |
+| Non-root user `sudeep` | `Dockerfile:51` | Agent code can't touch root-owned paths; dropbear runs unprivileged (port 2222 > 1024, no caps needed) |
 | All Linux capabilities dropped | `docker-compose.yaml:10` (`cap_drop: ALL`) | No `CAP_NET_ADMIN`/`CAP_SYS_ADMIN` etc. blocks most kernel-attack primitives |
 | `no-new-privileges` | `docker-compose.yaml:13` | Even a setuid binary can't escalate to root |
 | seccomp (Docker builtin profile) | active by default (verified via `docker info`) | Blocks ~44 dangerous syscalls (e.g. `kexec_load`, `unshare` in some paths) |
@@ -73,12 +73,14 @@ Every control below is verifiable; the checklist in §5 confirms each one.
 | PAT delivered as a compose secret, 0400, uid 1000 | `docker-compose.yaml:28-33` | Not baked into image layers or build args; not in `docker history` |
 | `authorized_keys` as a compose secret | `docker-compose.yaml:34-38` | Login keys live outside the image; rotation = replace file + recreate |
 | `.dockerignore` excludes `secrets/`, `keys/`, `.git/` | `.dockerignore` | Secrets and git history can't leak into build context or image |
-| git `insteadOf` forces HTTPS | `Dockerfile:27` | No SSH deploy keys needed for GitHub; PAT is the only credential |
-| git identity via env/`git config` | `Dockerfile:26-30` | Commits don't leak the host's real git config |
-| Immutable base image pin (digest) | `Dockerfile:1-3` | `alpine:3.24@sha256:294b683…` — builds reproducible even if the tag is poisoned upstream |
-| opencode installs from the V2 channel | `Dockerfile:44-56` | `opencode.ai/v2/install`. The bare `opencode.ai/install` URL is V1 and would silently downgrade the sandbox |
+| git `insteadOf` forces HTTPS | `Dockerfile:45` | No SSH deploy keys needed for GitHub; PAT is the only credential |
+| git identity via env/`git config` | `Dockerfile:44-48` | Commits don't leak the host's real git config |
+| Immutable base image pin (digest) | `Dockerfile:1-5` | `alpine:3.24@sha256:be26560…` — the base can't be poisoned upstream. apk packages float at build time by design (that's what refreshes the CA bundle); the eMudhra root checks guard against a regressed base |
+| CA trust store refreshed on every build | `Dockerfile:22-41` | Base re-pinned + `apk upgrade`, and the build fails if the eMudhra roots removed by NSS 3.131.1 reappear |
+| Embedded CA stores floored | `Dockerfile:109-134` | opencode ≥ 2.2.0 (Bun ≥ 1.4.4) and uv ≥ 0.13.4; the opencode binary itself is grepped for `emSign ECC Root CA - G3` |
+| opencode installs from the V2 channel | `Dockerfile:62-74` | `opencode.ai/v2/install`. The bare `opencode.ai/install` URL is V1 and would silently downgrade the sandbox |
 | agent-browser MCP server pinned to a local command | `opencode.global.json` | Spawned by opencode itself over stdio — no network listener, no URL to rewrite |
-| Browser runs with `--no-sandbox` | `Dockerfile:76-81` | Required, not a shortcut: chromium's sandbox can't create namespaces under `cap_drop: ALL` + `no-new-privileges`. Container isolation is the boundary that remains |
+| Browser runs with `--no-sandbox` | `Dockerfile:93-99` | Required, not a shortcut: chromium's sandbox can't create namespaces under `cap_drop: ALL` + `no-new-privileges`. Container isolation is the boundary that remains |
 | Host PAT file mode 0400 | `secrets/github_pat` (host) | Only the owner on the Mac can read it |
 | Log rotation 10 MB × 3 | `docker-compose.yaml:17-20` | Container logs can't fill the VM disk |
 
@@ -137,11 +139,34 @@ no inner privilege boundary to slow it down.
 
 - Base image: pinned by digest ✅ — but a **stale pin rots**: when you bump the
   Alpine version, re-pin to the new digest deliberately (§4, Tier 1). Rotated
-  3.20 → 3.24 on 2026-10-12 (`sha256:294b683…`, alpine 3.24.2).
+  3.20 → 3.24 on 2026-10-12 (`sha256:294b683…`, alpine 3.24.2), then re-pinned
+  on 2026-10-27 for the eMudhra CA response (`sha256:be26560…`).
+- CA trust store: `apk upgrade` runs before the package install, `ca-certificates`
+  and `ca-certificates-bundle` are explicit, and the build fails if the emSign
+  roots removed by NSS 3.131.1 (`ECC G3`, `C1`, `ECC C3`) reappear. This covers
+  system TLS (`curl`, `git`) only — TLS clients do not consult CRLs, so a stale
+  bundle is equivalent to trusting the compromised intermediates.
+- Embedded trust stores: opencode is Bun-compiled, and Bun/uv ship their own CA
+  lists, so the system bundle cannot fix them. The build enforces
+  opencode ≥ 2.2.0 (Bun ≥ 1.4.4, GHSA-26q8-h657-pf84) and uv ≥ 0.13.4
+  (GHSA-hq85-5cpj-mr62), and greps the opencode binary for the removed root.
+  `bun build --compile` executables keep the runtime they were built with, so
+  this only holds for an image rebuilt after 2026-10-23.
 - opencode: fetched with `curl | bash`, not checksum-verified. Acceptable
   tradeoff; Tier 2 shows the stricter alternative (release tarball + sha256).
 - agent-browser: likewise a `curl` of an unverified release binary. Same class
   of risk as the opencode installer, no worse.
+- agent-browser trust store (eMudhra, **unresolved**): the linux-musl release
+  binary is a rustls client and still embeds real copies of the three removed
+  emSign roots (`emSign ECC Root CA - G3`, `Root CA - C1`, `ECC Root CA - C3`
+  — verified 2026-11-02 by grepping the shipped binary; DER subjects + EC key
+  material, not stray strings). No patched release exists to floor against, so
+  there is no build-time assertion yet. Exposure is bounded in this sandbox:
+  page navigation and TLS to websites happen in the distro chromium (Chrome
+  Root Store 43 removes the G3 root), and agent-browser talks to it over
+  localhost CDP — but any direct fetch the CLI itself makes would use its
+  embedded roots. Track upstream; once a release drops the roots, add the same
+  version-floor + binary-grep assertion as for opencode.
 - `apk add` packages: pulled from Alpine CDN over TLS at build time; a build
   is a supply-chain event every time you run it. Rebuild cadence matters.
 
@@ -239,12 +264,18 @@ container is recreated. ✅ (was: unbounded pids and logs)
       — **superseded 2026-10-12:** rotated to `alpine:3.24@sha256:294b683…`
       (3.24.2). 3.20 was past its support window; 3.24 also carries
       chromium 152 instead of 131 for agent-browser.
+      — **superseded 2026-10-27:** re-pinned to `sha256:be26560…` and the build
+      now upgrades apk packages, asserts the NSS 3.131.1 eMudhra root removals,
+      and floors opencode/bun/uv at their patched trust-store versions.
 - [x] opencode installs from the **V2** channel
       (`opencode.ai/v2/install`). Previously the bare `opencode.ai/install`
       URL — the V1 channel — which had quietly become a downgrade trap: the
       sandbox sat on V2 while a rebuild would install 1.19.0.
 - [x] headless browsing via agent-browser + Alpine chromium, registered as an
       MCP server in the global opencode config
+- [x] eMudhra CA response (2026-10-27): base re-pinned, `apk upgrade` on build,
+      `ca-certificates(-bundle)` explicit, NSS 3.131.1 root removals asserted,
+      and embedded-store floors (opencode 2.2.0 / Bun 1.4.4 / uv 0.13.4).
 
 ### Tier 1 — cheap, high value (next)
 

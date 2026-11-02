@@ -1,13 +1,28 @@
 # Use a minimal base image — digest pin = multi-arch index digest for alpine:3.24
 # (rotate deliberately: docker buildx imagetools inspect alpine:3.24)
-FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
+# 2026-10-27: re-pinned for the eMudhra CA response (see the trust-store check
+# below). The old pin predates alpine ca-certificates 20261020-r0.
+FROM alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
 
 # Install git, openssh-client, bash, curl+tar for the opencode installer,
 # and dropbear for SSH access (runs as sudeep, needs no capabilities)
 # chromium + a font set back agent-browser's headless browsing — fontconfig
 # alone leaves screenshots full of tofu boxes for anything outside opensans
 # (libstdc++/libgcc are runtime deps of the opencode binary)
-RUN apk add --no-cache \
+#
+# Upgrade the pinned base first: a stale digest also means a stale
+# ca-certificates bundle, and TLS clients here do not consult revocation lists,
+# so the only fix for a distrusted CA is a newer bundle. ca-certificates(-bundle)
+# is explicit so a future base without it cannot silently regress.
+#
+# eMudhra: eight emSign intermediate CAs had recoverable private keys (Oct
+# 2026). NSS 3.131.1 / alpine ca-certificates 20261020-r0 drop the affected
+# roots (ECC G3, C1, ECC C3) and keep emSign Root CA - G1. Fail the build if
+# one comes back — the container pulls code and model responses over TLS.
+RUN apk upgrade --no-cache \
+    && apk add --no-cache \
+    ca-certificates \
+    ca-certificates-bundle \
     git \
     openssh-client \
     bash \
@@ -20,7 +35,10 @@ RUN apk add --no-cache \
     chromium \
     font-dejavu \
     font-liberation \
-    && rm -rf /var/cache/apk/*
+    && rm -rf /var/cache/apk/* \
+    && [ ! -e /usr/share/ca-certificates/mozilla/emSign_ECC_Root_CA_-_G3.crt ] \
+    && [ ! -e /usr/share/ca-certificates/mozilla/emSign_Root_CA_-_C1.crt ] \
+    && [ ! -e /usr/share/ca-certificates/mozilla/emSign_ECC_Root_CA_-_C3.crt ]
 
 COPY gh-askpass sandbox-entry /usr/local/bin/
 RUN chmod 0755 /usr/local/bin/gh-askpass /usr/local/bin/sandbox-entry \
@@ -87,6 +105,33 @@ RUN curl -fsSL https://bun.sh/install | bash -s -- \
 # Install uv (latest)
 RUN UV_NO_MODIFY_PATH=1 curl -LsSf https://astral.sh/uv/install.sh | sh \
     && /home/sudeep/.local/bin/uv --version
+
+# The system ca-certificates bundle above does not reach tools that ship their
+# own trust store: opencode is Bun-compiled, and both Bun and uv embed CA lists.
+#   - Bun < 1.4.4 trusts the compromised eMudhra roots (GHSA-26q8-h657-pf84);
+#     opencode 2.2.0 is the first release built with Bun 1.4.4.
+#   - uv < 0.13.4 has the same problem (GHSA-hq85-5cpj-mr62).
+# Enforce the patched floors so a channel rollback fails the build instead of
+# silently shipping a toolchain that accepts forged certificates. The binary
+# check is the real assertion: it looks for the removed root name in the
+# compiled-in bundle, so it also catches an opencode rebuild on an old Bun.
+RUN set -eu; \
+    ge() { \
+        awk -v a="$1" -v b="$2" 'BEGIN { \
+            n = split(a, x, "."); m = split(b, y, "."); \
+            for (i = 1; i <= 3; i++) { \
+                xi = (i <= n) ? x[i] + 0 : 0; yi = (i <= m) ? y[i] + 0 : 0; \
+                if (xi > yi) exit 0; if (xi < yi) exit 1; \
+            } exit 0; \
+        }'; \
+    }; \
+    ver=$(/home/sudeep/.opencode/bin/opencode --version | awk '{print $NF}'); ver=${ver#v}; \
+    ge "$ver" 2.2.0 || { echo "opencode $ver predates the eMudhra trust-store fix" >&2; exit 1; }; \
+    ! grep -q "emSign ECC Root CA - G3" /home/sudeep/.opencode/bin/opencode; \
+    ver=$(/home/sudeep/.bun/bin/bun --version); \
+    ge "$ver" 1.4.4 || { echo "bun $ver predates the eMudhra trust-store fix" >&2; exit 1; }; \
+    ver=$(/home/sudeep/.local/bin/uv --version | awk '{print $2}'); \
+    ge "$ver" 0.13.4 || { echo "uv $ver predates the eMudhra trust-store fix" >&2; exit 1; }
 
 # SSH access: ~/.ssh is a named volume — the host key is generated on first
 # container start (sandbox-entry) and survives rebuilds; authorized_keys is
