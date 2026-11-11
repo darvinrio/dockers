@@ -25,6 +25,11 @@ services:
     volumes:
       - work:/workspace              # holds project-a/, project-b/, etc. via git clone
       - ssh_keys:/home/sudeep/.ssh   # persists dropbear host key across rebuilds
+      # Agent chat history + saved logins. Named volumes (not host bind mounts)
+      # keep SQLite on the VM's ext4, where locking and fsync work normally.
+      - opencode_data:/home/sudeep/.local/share/opencode    # sessions DB, snapshots, tool output, logins
+      - opencode_state:/home/sudeep/.local/state/opencode   # prompt history, last model, TUI tabs
+      - omp_data:/home/sudeep/.omp                          # omp sessions/blobs, config, credentials
     secrets:
       - source: github_pat
         target: github_pat
@@ -45,6 +50,9 @@ services:
 volumes:
   work:
   ssh_keys:
+  opencode_data:
+  opencode_state:
+  omp_data:
 
 secrets:
   github_pat:

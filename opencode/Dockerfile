@@ -1,10 +1,10 @@
 # Use a minimal base image — digest pin = multi-arch index digest for alpine:3.24
 # (rotate deliberately: docker buildx imagetools inspect alpine:3.24)
-# 2026-10-27: re-pinned for the eMudhra CA response (see the trust-store check
-# below). The old pin predates alpine ca-certificates 20261020-r0.
-FROM alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
+# 2026-11-11: re-pinned to 3.24.4. ca-certificates is still 20261020-r0, so the
+# eMudhra trust-store checks below are unchanged from the 2026-10-27 pin.
+FROM alpine:3.24@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
 
-# Install git, openssh-client, bash, curl+tar for the opencode installer,
+# Install git, openssh-client, bash, curl+tar for the opencode/omp installers,
 # and dropbear for SSH access (runs as sudeep, needs no capabilities)
 # chromium + a font set back agent-browser's headless browsing — fontconfig
 # alone leaves screenshots full of tofu boxes for anything outside opensans
@@ -73,6 +73,31 @@ RUN attempt=0; until curl -fsSL https://opencode.ai/v2/install | bash -s -- --no
     && /home/sudeep/.opencode/bin/opencode --version
 ENV PATH="/home/sudeep/.opencode/bin:${PATH}"
 
+# Install omp (oh-my-pi) CLI (latest; untrusted-within-sandbox is fine by
+# design). --binary asks for the prebuilt musl build explicitly rather than
+# relying on the installer's default; the installer checks the build service's
+# sha256 and smoke-tests the binary. libstdc++/libgcc installed above are its
+# dynamic runtime deps on musl. PI_INSTALL_DIR is explicit so the install path
+# cannot depend on HOME being set the way the installer assumes.
+# Retried because the build service is a single external dependency.
+RUN attempt=0; until curl -fsSL -o /tmp/omp-install.sh https://omp.sh/install \
+        && PI_INSTALL_DIR=/home/sudeep/.local/bin sh /tmp/omp-install.sh --binary; do \
+        attempt=$((attempt + 1)); \
+        [ "$attempt" -ge 3 ] && exit 1; \
+        echo "omp install failed (attempt $attempt), retrying in 5s..." >&2; \
+        sleep 5; \
+    done \
+    && rm -f /tmp/omp-install.sh \
+    && /home/sudeep/.local/bin/omp --version
+
+# Mount points for the compose named volumes. They must exist in the image and
+# be owned by sudeep: Docker copies the directory's ownership into a new named
+# volume on first use, and a missing path would leave the volume root owned by
+# root, so opencode/omp could not write their session data.
+RUN mkdir -p /home/sudeep/.local/share/opencode \
+             /home/sudeep/.local/state/opencode \
+             /home/sudeep/.omp
+
 # Install agent-browser (native Rust CLI) from its release binary: the npm
 # package is a `#!/usr/bin/env node` shim and this image ships no node.
 # musl builds exist, so Alpine is a supported target. Installed under $HOME
@@ -113,8 +138,8 @@ RUN UV_NO_MODIFY_PATH=1 curl -LsSf https://astral.sh/uv/install.sh | sh \
 #   - uv < 0.13.4 has the same problem (GHSA-hq85-5cpj-mr62).
 # Enforce the patched floors so a channel rollback fails the build instead of
 # silently shipping a toolchain that accepts forged certificates. The binary
-# check is the real assertion: it looks for the removed root name in the
-# compiled-in bundle, so it also catches an opencode rebuild on an old Bun.
+# checks are the real assertion: they look for the removed root name in the
+# compiled-in bundle, so they also catch an opencode/omp rebuild on an old Bun.
 RUN set -eu; \
     ge() { \
         awk -v a="$1" -v b="$2" 'BEGIN { \
@@ -128,6 +153,7 @@ RUN set -eu; \
     ver=$(/home/sudeep/.opencode/bin/opencode --version | awk '{print $NF}'); ver=${ver#v}; \
     ge "$ver" 2.2.0 || { echo "opencode $ver predates the eMudhra trust-store fix" >&2; exit 1; }; \
     ! grep -q "emSign ECC Root CA - G3" /home/sudeep/.opencode/bin/opencode; \
+    ! grep -q "emSign ECC Root CA - G3" /home/sudeep/.local/bin/omp; \
     ver=$(/home/sudeep/.bun/bin/bun --version); \
     ge "$ver" 1.4.4 || { echo "bun $ver predates the eMudhra trust-store fix" >&2; exit 1; }; \
     ver=$(/home/sudeep/.local/bin/uv --version | awk '{print $2}'); \
@@ -147,6 +173,7 @@ COPY opencode.global.json /home/sudeep/.config/opencode/opencode.json
 # Symlink system-wide since login shells reset PATH via /etc/profile
 USER root
 RUN ln -s /home/sudeep/.opencode/bin/opencode /usr/local/bin/opencode \
+    && ln -s /home/sudeep/.local/bin/omp /usr/local/bin/omp \
     && ln -s /home/sudeep/.bun/bin/bun /usr/local/bin/bun \
     && ln -s /home/sudeep/.local/bin/uv /usr/local/bin/uv \
     && ln -s /home/sudeep/.local/bin/uvx /usr/local/bin/uvx \

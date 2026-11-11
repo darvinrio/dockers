@@ -1,10 +1,15 @@
 # Repo of Dockers
 
-hermes.yaml - Hermes agent
-opencode.yaml - Opencode agent
+- `hermes.yaml` — Hermes agent
+- `opencode/docker-compose.yaml` — opencode + omp (oh-my-pi) sandbox
 
 ## Commands
 
 ```sh
-docker compose -f file.yml up -d.
+docker compose -f hermes.yaml up -d
+docker compose -f opencode/docker-compose.yaml up -d
 ```
+
+The opencode sandbox keeps both agents' chat history in named volumes. See
+`opencode/COMMANDS.md` for shells, SSH, persistence, backup and update commands,
+and `opencode/SANDBOXING.md` for the threat model.

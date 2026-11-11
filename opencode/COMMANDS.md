@@ -1,16 +1,23 @@
 # COMMANDS.md — opencode sandbox quick reference
 
-Dockerized dev sandbox: Alpine + git + opencode CLI + bun + uv + agent-browser
-(headless Chromium) + dropbear SSH (key-only, port 2222).
+Dockerized dev sandbox: Alpine + git + opencode CLI + omp (oh-my-pi) CLI + bun +
+uv + agent-browser (headless Chromium) + dropbear SSH (key-only, port 2222).
 Container user `sudeep`, work volume at `/workspace`, GitHub PAT at `/run/secrets/github_pat`.
+Chat history for both agents lives in named volumes, so it survives rebuilds.
 
 ## Build & run
 
 ```sh
-docker compose build                     # build image (installs latest opencode, bun, uv, agent-browser)
+docker compose build --pull --no-cache   # build image (installs latest opencode, omp, bun, uv, agent-browser)
 docker compose up -d                     # start persistent container (SSH daemon host)
 docker compose down                      # stop & remove container (volumes survive)
 ```
+
+Components are installed by the Dockerfile at build time. A plain
+`docker compose build` reuses cached layers and therefore keeps whatever was
+current when those layers were first built — use `--no-cache` when you actually
+want newer opencode/omp/bun/uv/agent-browser. `--pull` alone does nothing here
+because the base image is pinned by digest.
 
 ## Shells inside the container
 
@@ -19,6 +26,54 @@ docker compose run --rm sudeep-agent               # ephemeral interactive bash 
 docker compose exec sudeep-agent bash              # extra shell in the running (up -d) container
 docker compose run --rm sudeep-agent opencode --version
 ```
+
+## Persistent chat history
+
+Both agents keep their state in named volumes, so sessions, snapshots and saved
+logins survive `docker compose down`, `up --force-recreate` and image rebuilds
+(but not `down -v` / `docker volume rm`).
+
+| Volume | Container path | Holds |
+|--------|----------------|-------|
+| `opencode_opencode_data` | `~/.local/share/opencode` | `opencode.db` (sessions/messages/credentials), `storage/`, `snapshot/`, `tool-output/`, `shell/`, `log/` |
+| `opencode_opencode_state` | `~/.local/state/opencode` | prompt/up-arrow history, last model, TUI tabs, frecency, lock/heartbeat dirs |
+| `opencode_omp_data` | `~/.omp` | omp session JSONL + blobs, `agent/config.yml`, provider credentials, logs |
+
+Still ephemeral (rebuilt from the image every time): `~/.config/opencode`
+(including `opencode.global.json`), `~/.opencode/bin`, `~/.local/bin`,
+`~/.cache/opencode`. Edit config in this repo and rebuild.
+
+Back up each history volume:
+
+```sh
+docker run --rm -v opencode_opencode_data:/data -v "$PWD:/backup" alpine:3.24 \
+  tar czf /backup/opencode-data-$(date +%F).tgz -C /data .
+docker run --rm -v opencode_opencode_state:/data -v "$PWD:/backup" alpine:3.24 \
+  tar czf /backup/opencode-state-$(date +%F).tgz -C /data .
+docker run --rm -v opencode_omp_data:/data -v "$PWD:/backup" alpine:3.24 \
+  tar czf /backup/omp-data-$(date +%F).tgz -C /data .
+```
+
+Reset one agent without touching the other:
+
+```sh
+docker compose down
+docker volume rm opencode_opencode_data opencode_opencode_state   # or opencode_omp_data
+docker compose up -d
+```
+
+Notes:
+
+- opencode V2 stores credentials in `opencode.db`, so persisting history also
+  persists logins. omp keeps credentials under `~/.omp`. Both volumes are
+  readable by the agent — treat their contents as sensitive (transcripts can
+  contain code, tokens and PII).
+- Named volumes, not host bind mounts: SQLite locking/fsync against VirtioFS is
+  slow and error-prone.
+- Docker initializes a new volume from the image path on first use; the
+  Dockerfile pre-creates the three paths owned by `sudeep` so the volume root is
+  writable.
+- `docker compose down -v` wipes the `work` volume too — do not use it casually.
 
 ## SSH access (from the Mac)
 
@@ -73,6 +128,29 @@ The bare `opencode.ai/install` URL is the *V1* channel. Point the Dockerfile at
 it by accident and the next `docker compose build` silently replaces V2 with
 V1. If `opencode --version` ever reports `1.x`, check the install URL in
 `Dockerfile`.
+
+## omp CLI (inside container)
+
+omp (oh-my-pi) is installed alongside opencode from its official installer
+(`https://omp.sh/install`, prebuilt musl binary, sha256-verified). It is the
+second agent in this sandbox and shares `/workspace` and the GitHub PAT.
+
+```sh
+omp                      # TUI in a project dir
+omp --continue           # resume the most recent session for this directory
+omp --resume             # pick a session
+omp --version
+omp update               # self-update (container layer only; lost on recreate)
+```
+
+Sessions and config live in `~/.omp/agent/` (`sessions/`, `blobs/`,
+`config.yml`, provider credentials) and are persisted by the `omp_data` volume.
+Log in to providers with `/login` inside the TUI. Shell completions:
+`eval "$(omp completions bash)"`.
+
+The binary is unpinned: `docker compose build --no-cache` fetches whatever
+release is current. `omp update` upgrades only the running container — rebuild
+the image if you want it permanent.
 
 ## agent-browser (headless browsing, inside container)
 
@@ -130,8 +208,8 @@ Two gotchas:
 - The **first** call after a fresh `up -d` races the MCP handshake and can
   return an empty list while the server is still spawning. Re-run it.
 - `opencode mcp list` reports "No MCP servers configured" even when the server is
-  connected — a CLI display quirk on 2.0.26. Use `/api/mcp` (above) or the log
-  line `mcp connected server=agent-browser tools=29` to confirm.
+  connected — a CLI display quirk seen since 2.0.26. Use `/api/mcp` (above) or
+  the log line `mcp connected server=agent-browser tools=29` to confirm.
 
 To change the server config, edit `opencode.global.json` in this repo and
 rebuild. A project can override the `agent-browser` entry by declaring the same
@@ -143,26 +221,24 @@ server name in its own `opencode.json`.
 bun --version && uv --version     # both symlinked into /usr/local/bin
 ```
 
-Versions are unpinned — each build installs the latest opencode, bun, uv and
-agent-browser. `docker compose build` pulls whatever is current at build time.
+Versions are unpinned — each build installs the latest opencode, omp, bun, uv
+and agent-browser. Those installer layers are cached, so a plain
+`docker compose build` keeps the versions from the first build; use
+`docker compose build --no-cache` to actually pick up new upstream releases.
 
-## Updating opencode
-
-```sh
-docker compose build && docker compose up -d --force-recreate
-```
-
-The base image pin does not move by itself: each build installs whatever
-opencode/bun/uv are current **and** refreshes the apk packages, but the digest
-in `Dockerfile` still needs a deliberate bump when Alpine cuts a new image. The
-build also fails if a bundled CA store is older than the eMudhra fix
-(opencode 2.2.0 / Bun 1.4.4 / uv 0.13.4), so a failed build means the upstream
-channel rolled back, not that your machine is broken. To force the apk layers
-to re-resolve instead of using the build cache:
+## Updating the agents and components
 
 ```sh
-docker compose build --no-cache
+docker compose build --no-cache && docker compose up -d --force-recreate
 ```
+
+The base image pin does not move by itself: the digest in `Dockerfile` needs a
+deliberate bump when Alpine cuts a new image (check with
+`docker buildx imagetools inspect alpine:3.24`). The build also fails if a
+bundled CA store is older than the eMudhra fix (opencode 2.2.0 / Bun 1.4.4 /
+uv 0.13.4) or if the opencode/omp binaries still contain a removed root, so a
+failed build means the upstream channel rolled back, not that your machine is
+broken.
 
 Verify the trust store from inside the container. A nonzero exit alone is not
 a pass — DNS and network failures also exit nonzero — so check the actual
