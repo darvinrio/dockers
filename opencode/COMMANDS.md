@@ -120,8 +120,11 @@ CLI shortcut: `zed ssh://opencode/workspace/<project>`
 ```sh
 opencode                 # TUI in a project dir
 opencode --version
-opencode serve           # HTTP server mode (API/SDK)
+opencode serve           # foreground HTTP server (alternative to the shared service)
 ```
+
+The sandbox also starts the shared background service on port `4096` for the
+web UI and API — see below.
 
 ### Two install channels — don't mix them
 
@@ -288,6 +291,59 @@ docker compose up -d --force-recreate
 - dropbear host key persists in the `ssh_keys` volume — rebuilds do NOT rotate it
 - Key-only auth (`-s`); port published on `127.0.0.1` only
 
+## Web UI & HTTP API (from the Mac)
+
+The container starts opencode's shared background service on `0.0.0.0:4096` and
+compose publishes it on `127.0.0.1:4096` only, so it is reachable from the Mac
+and not from the LAN. It is the same server the TUI uses, so web and terminal
+sessions share the database.
+
+```sh
+open http://127.0.0.1:4096                    # web UI (asks for a pairing link/password)
+docker compose exec sudeep-agent opencode pair   # one-time login link (5 min TTL)
+docker compose exec sudeep-agent opencode service status
+```
+
+For scripts, the API takes Basic auth with username `opencode` and the server
+password:
+
+```sh
+curl -u "opencode:$PASSWORD" http://127.0.0.1:4096/api/info
+```
+
+No password is configured in the repo, so opencode generates one per container
+and stores it in `~/.config/opencode/service.json` (0600). That path is not on a
+volume, so a recreate — `up -d --force-recreate`, a rebuild, even `down`/`up` —
+mints a new password, which signs out existing browser sessions:
+
+```sh
+docker compose exec sudeep-agent sed -n 's/.*"password": *"\([^"]*\)".*/\1/p' \
+  ~/.config/opencode/service.json
+```
+
+For a password you choose, export `OPENCODE_PASSWORD` before creating the
+container (`docker-compose.yaml` passes it through; `sandbox-entry` writes it
+into the service config):
+
+```sh
+OPENCODE_PASSWORD='a-long-secret' docker compose -f opencode/docker-compose.yaml up -d
+```
+
+`docker compose exec ... opencode service set password '...' && opencode service restart`
+works too, but only until the next recreate.
+
+To turn the listener off, set `OPENCODE_SERVE=0` in `docker-compose.yaml` and
+recreate. If you only need occasional access, drop the port mapping and forward
+over the existing SSH channel instead, which needs no container config at all:
+
+```sh
+ssh -N -L 4096:127.0.0.1:4096 -p 2222 sudeep@localhost
+```
+
+Requiring `hostname 0.0.0.0` is not optional for the published port: Docker
+forwards to the container's `eth0`, so a service left on `127.0.0.1` inside the
+container is unreachable from the host no matter what `ports:` says.
+
 ## Troubleshooting
 
 ```sh
@@ -315,3 +371,4 @@ ssh-keygen -lf ~/.ssh/opencode_container.pub
 | 2222 | dropbear SSH |
 | 4321 | astro |
 | 8080 | litestar |
+| 4096 | opencode web UI / HTTP API |

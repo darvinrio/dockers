@@ -6,6 +6,38 @@ if [ ! -f "$HOME/.ssh/dropbear_host_ed25519" ]; then
 fi
 dropbear -r "$HOME/.ssh/dropbear_host_ed25519" -p 2222 -s -P "$HOME/.ssh/dropbear.pid"
 
+# Optional opencode HTTP server (web UI + API). It must listen on 0.0.0.0, not
+# 127.0.0.1: Docker forwards published ports to the container's eth0, so a
+# loopback-only listener is unreachable from the host even though the port is
+# published.
+#
+# The server keeps its own auth (generated password, `opencode pair` links, or
+# one set with `opencode service set password`); publishing the port does not
+# by itself grant agent access.
+#
+# Using the shared background service (not `opencode serve`) keeps one server on
+# the sessions DB, so TUI and web sessions are the same. ~/.config/opencode is
+# not on a volume, so re-apply the config on every container start. Skip it when
+# a server is already listening on our port — `compose run` shells share the
+# state volume with the live container and must not restart it.
+if [ "${OPENCODE_SERVE:-0}" = "1" ]; then
+    case "$(opencode service status 2>/dev/null)" in
+    *:4096*)
+        : # already up on the expected address
+        ;;
+    *)
+        # Optional fixed password from the environment; otherwise opencode
+        # generates one and keeps it in ~/.config/opencode/service.json.
+        if [ -n "${OPENCODE_PASSWORD:-}" ]; then
+            opencode service set password "$OPENCODE_PASSWORD"
+        fi
+        opencode service set hostname 0.0.0.0
+        opencode service set port 4096
+        opencode service start
+        ;;
+    esac
+fi
+
 # Interactive shell for `compose run`; idle keeper for `compose up -d`.
 if [ -t 0 ]; then
     exec bash

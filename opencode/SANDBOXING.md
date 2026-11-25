@@ -69,7 +69,7 @@ Every control below is verifiable; the checklist in §5 confirms each one.
 | seccomp (Docker builtin profile) | active by default (verified via `docker info`) | Blocks ~44 dangerous syscalls (e.g. `kexec_load`, `unshare` in some paths) |
 | Resource ceilings: 4 GB RAM, 2 CPUs, 256 pids | `docker-compose.yaml:13-15` | Contain runaway agents, crypto-miners, fork bombs |
 | `/tmp` as tmpfs, `exec`, mode 1777 | `docker-compose.yaml:7-8` | Wiped on container recreate. Note: `noexec` was flipped off deliberately — see §4 Tier 0 |
-| Egress ports published on 127.0.0.1 only | `docker-compose.yaml:21-24` | SSH/dev ports not reachable from the LAN or internet |
+| Egress ports published on 127.0.0.1 only | `docker-compose.yaml:22-25` | SSH/dev/opencode ports not reachable from the LAN or internet |
 | Key-only SSH (`dropbear -s`) | `sandbox-entry:7` | No password guessing; auth requires the Mac-side private key |
 | PAT delivered as a compose secret, 0400, uid 1000 | `docker-compose.yaml:34-38` | Not baked into image layers or build args; not in `docker history` |
 | `authorized_keys` as a compose secret | `docker-compose.yaml:39-43` | Login keys live outside the image; rotation = replace file + recreate |
@@ -264,10 +264,15 @@ on macOS the VM is disposable. Residual risks:
 
 **Likelihood: low · Impact: low-medium**
 
-`2222/4321/8080` are reachable by anything running on the Mac itself
-(malware on the host could talk to dropbear). Mitigations already in place:
-key-only auth, single authorized key, key lives in the Mac keychain-able
-`~/.ssh/opencode_container`. Keep it that way; never bind these to `0.0.0.0`.
+`2222/4321/8080/4096` are reachable by anything running on the Mac itself
+(malware on the host could talk to dropbear or the opencode API). Mitigations
+already in place: key-only auth, single authorized key, key lives in the Mac
+keychain-able `~/.ssh/opencode_container`; the opencode server keeps its own
+password/pairing auth and, being the agent's own control plane, is as sensitive
+as the SSH key. Note that `4096` is deliberately bound to `0.0.0.0` *inside* the
+container so the published port works (Docker forwards to `eth0`, not loopback);
+the host-side binding is still `127.0.0.1`. Keep every published port
+`127.0.0.1`-bound; never bind these to `0.0.0.0` on the host.
 
 ### T7 — Dropbear/SSH hygiene
 

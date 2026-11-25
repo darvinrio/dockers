@@ -22,6 +22,7 @@ services:
       - "127.0.0.1:4321:4321" # astro
       - "127.0.0.1:8080:8080" # litestar
       - "127.0.0.1:2222:2222" # dropbear ssh
+      - "127.0.0.1:4096:4096" # opencode HTTP server (web UI + API)
     volumes:
       - work:/workspace              # holds project-a/, project-b/, etc. via git clone
       - ssh_keys:/home/sudeep/.ssh   # persists dropbear host key across rebuilds
@@ -42,6 +43,12 @@ services:
         gid: "1000"
         mode: 0400
     environment:
+      # Bind the opencode server to 0.0.0.0:4096 so the published port works
+      # (see sandbox-entry). Set to 0 to run the sandbox without it.
+      - OPENCODE_SERVE=1
+      # Optional fixed password for the opencode server; when unset, a random
+      # one is generated per container and stored in ~/.config/opencode/service.json.
+      - OPENCODE_PASSWORD
       - GIT_AUTHOR_NAME=sudeep
       - GIT_AUTHOR_EMAIL=yohermesbot@gmail.com
       - GIT_COMMITTER_NAME=sudeep
