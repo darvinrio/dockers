@@ -26,12 +26,12 @@ influenced by whatever repos, READMEs, dependencies, and model outputs enter it.
 ┌─ macOS (your Mac) ──────────────────────────────────────────────┐
 │  ┌─ Docker Desktop Linux utility VM (docker-desktop) ─────────┐ │
 │  │  ┌─ container: sudeep-agent (uid 1000) ──────────────────┐ │ │
-│  │  │  opencode + omp agents → LLM-generated code ← HOT ZONE│ │ │
+│  │  │  opencode + pi agents → LLM-generated code ← HOT ZONE  │ │ │
 │  │  │  /run/secrets/github_pat (readable by sudeep)         │ │ │
 │  │  │  outbound network: UNRESTRICTED                       │ │ │
 │  │  └───────────────────────────────────────────────────────┘ │ │
 │  │  named volumes: work, ssh_keys, opencode_data,             │ │
-│  │    opencode_state, omp_data (VM disk, not Mac disk)        │ │
+│  │    opencode_state, pi_data (VM disk, not Mac disk)         │ │
 │  └────────────────────────────────────────────────────────────┘ │
 │  published ports: 127.0.0.1 only · secrets/ dir · ssh keys      │
 └──────────────────────────────────────────────────────────────────┘
@@ -63,7 +63,7 @@ Every control below is verifiable; the checklist in §5 confirms each one.
 
 | Control | Where | Why it matters |
 |---|---|---|
-| Non-root user `sudeep` | `Dockerfile:51` | Agent code can't touch root-owned paths; dropbear runs unprivileged (port 2222 > 1024, no caps needed) |
+| Non-root user `sudeep` | `Dockerfile:58` | Agent code can't touch root-owned paths; dropbear runs unprivileged (port 2222 > 1024, no caps needed) |
 | All Linux capabilities dropped | `docker-compose.yaml:9-10` (`cap_drop: ALL`) | No `CAP_NET_ADMIN`/`CAP_SYS_ADMIN` etc. blocks most kernel-attack primitives |
 | `no-new-privileges` | `docker-compose.yaml:11-12` | Even a setuid binary can't escalate to root |
 | seccomp (Docker builtin profile) | active by default (verified via `docker info`) | Blocks ~44 dangerous syscalls (e.g. `kexec_load`, `unshare` in some paths) |
@@ -73,17 +73,17 @@ Every control below is verifiable; the checklist in §5 confirms each one.
 | Key-only SSH (`dropbear -s`) | `sandbox-entry:7` | No password guessing; auth requires the Mac-side private key |
 | PAT delivered as a compose secret, 0400, uid 1000 | `docker-compose.yaml:34-38` | Not baked into image layers or build args; not in `docker history` |
 | `authorized_keys` as a compose secret | `docker-compose.yaml:39-43` | Login keys live outside the image; rotation = replace file + recreate |
-| Agent history in named volumes | `docker-compose.yaml:30-32`, `:53-55` | Sessions/snapshots/tool output + omp state survive recreate; VM-local, no host bind mount. Mount points pre-created owned by `sudeep` (`Dockerfile:92-98`) so volume roots are writable |
+| Agent history in named volumes | `docker-compose.yaml:30-32`, `:53-55` | Sessions/snapshots/tool output + pi state survive recreate; VM-local, no host bind mount. Mount points pre-created owned by `sudeep` (`Dockerfile:108-110`) so volume roots are writable |
 | `.dockerignore` excludes `secrets/`, `keys/`, `.git/` | `.dockerignore` | Secrets and git history can't leak into build context or image |
-| git `insteadOf` forces HTTPS | `Dockerfile:45` | No SSH deploy keys needed for GitHub; PAT is the only credential |
-| git identity via env/`git config` | `Dockerfile:44-48` | Commits don't leak the host's real git config |
+| git `insteadOf` forces HTTPS | `Dockerfile:52` | No SSH deploy keys needed for GitHub; PAT is the only credential |
+| git identity via env/`git config` | `Dockerfile:51-55` | Commits don't leak the host's real git config |
 | Immutable base image pin (digest) | `Dockerfile:1-5` | `alpine:3.24@sha256:f59abe6…` — the base can't be poisoned upstream. apk packages float at build time by design (that's what refreshes the CA bundle); the eMudhra root checks guard against a regressed base |
-| CA trust store refreshed on every build | `Dockerfile:22-41` | Base re-pinned + `apk upgrade`, and the build fails if the eMudhra roots removed by NSS 3.131.1 reappear |
-| Embedded CA stores floored | `Dockerfile:133-160` | opencode ≥ 2.2.0 (Bun ≥ 1.4.4) and uv ≥ 0.13.4; both the opencode and omp binaries are grepped for `emSign ECC Root CA - G3` |
-| opencode installs from the V2 channel | `Dockerfile:62-73` | `opencode.ai/v2/install`. The bare `opencode.ai/install` URL is V1 and would silently downgrade the sandbox |
-| omp installed from a sha256-verified binary | `Dockerfile:76-90` | `omp.sh/install --binary` verifies the build-service checksum and smoke-tests the musl binary; pinned only by the upstream channel, like opencode |
-| agent-browser MCP server pinned to a local command | `opencode.global.json` | Spawned by opencode itself over stdio — no network listener, no URL to rewrite |
-| Browser runs with `--no-sandbox` | `Dockerfile:117-123` | Required, not a shortcut: chromium's sandbox can't create namespaces under `cap_drop: ALL` + `no-new-privileges`. Container isolation is the boundary that remains |
+| CA trust store refreshed on every build | `Dockerfile:27-48` | Base re-pinned + `apk upgrade`, and the build fails if the eMudhra roots removed by NSS 3.131.1 reappear |
+| Embedded CA stores floored | `Dockerfile:157-177` | opencode ≥ 2.2.0 (Bun ≥ 1.4.4), Node's `tls.rootCertificates` (read at build time) and uv ≥ 0.13.4; the opencode binary is grepped for `emSign ECC Root CA - G3` and pi must be ≥ 1.0.0 |
+| opencode installs from the V2 channel | `Dockerfile:74-85` | `opencode.ai/v2/install`. The bare `opencode.ai/install` URL is V1 and would silently downgrade the sandbox |
+| pi installed from pi.dev's managed installer | `Dockerfile:88-103` | `pi.dev/install.sh` fetches signed-off release metadata plus a pinned `npm-shrinkwrap.json`, installs into `/opt/pi` (outside `$HOME`), smoke-tests `pi --version`; pinned only by the upstream channel, like opencode |
+| agent-browser MCP server pinned to a local command | `opencode.global.json`, `pi.mcp.json` | Spawned by opencode/pi themselves over stdio — no network listener, no URL to rewrite |
+| Browser runs with `--no-sandbox` | `Dockerfile:129-135` | Required, not a shortcut: chromium's sandbox can't create namespaces under `cap_drop: ALL` + `no-new-privileges`. Container isolation is the boundary that remains |
 | Host PAT file mode 0400 | `secrets/github_pat` (host) | Only the owner on the Mac can read it |
 | Log rotation 10 MB × 3 | `docker-compose.yaml:17-20` | Container logs can't fill the VM disk |
 
@@ -141,21 +141,21 @@ no inner privilege boundary to slow it down.
 **Likelihood: medium · Impact: medium**
 
 Chat history is persisted in named volumes (`opencode_data`, `opencode_state`,
-`omp_data`) so sessions and logins survive rebuilds. That changes the blast
+`pi_data`) so sessions and logins survive rebuilds. That changes the blast
 radius in two ways:
 
 - Transcripts accumulate code, secrets and PII from every past session. Any
   code running as `sudeep` — including a prompt-injected agent — can read the
   whole history and exfiltrate it.
-- opencode V2 stores provider credentials in `opencode.db`, and omp keeps its
-  own under `~/.omp`. Persisting history therefore persists those tokens even
-  after the GitHub PAT secret is rotated.
+- opencode V2 stores provider credentials in `opencode.db`, and pi keeps its
+  own in `~/.pi/agent/auth.json`. Persisting history therefore persists those
+  tokens even after the GitHub PAT secret is rotated.
 
 These volumes are VM-local (no host bind mount), and the agent already has
 unrestricted egress, so this adds no new escape path — it widens what is
 available to an already-compromised agent. Reset history with
 `docker compose down && docker volume rm opencode_opencode_data
-opencode_opencode_state opencode_omp_data`; back it up with the commands in
+opencode_opencode_state opencode_pi_data`; back it up with the commands in
 `COMMANDS.md`.
 
 ### T3 — Supply chain of the image itself
@@ -172,18 +172,23 @@ opencode_opencode_state opencode_omp_data`; back it up with the commands in
   roots removed by NSS 3.131.1 (`ECC G3`, `C1`, `ECC C3`) reappear. This covers
   system TLS (`curl`, `git`) only — TLS clients do not consult CRLs, so a stale
   bundle is equivalent to trusting the compromised intermediates.
-- Embedded trust stores: opencode is Bun-compiled, and Bun/uv ship their own CA
-  lists, so the system bundle cannot fix them. The build enforces
-  opencode ≥ 2.2.0 (Bun ≥ 1.4.4, GHSA-26q8-h657-pf84) and uv ≥ 0.13.4
-  (GHSA-hq85-5cpj-mr62), and greps the opencode and omp binaries for the
-  removed root. `bun build --compile` executables keep the runtime they were
-  built with, so this only holds for an image rebuilt after 2026-10-23.
+- Embedded trust stores: opencode is Bun-compiled, Node embeds its own root list,
+  and Bun/uv ship their own CA lists, so the system bundle cannot fix them. The
+  build enforces opencode ≥ 2.2.0 (Bun ≥ 1.4.4, GHSA-26q8-h657-pf84) and
+  uv ≥ 0.13.4 (GHSA-hq85-5cpj-mr62), greps the opencode binary for the removed
+  root, and asks the installed Node for its `tls.rootCertificates`. Node needs
+  the runtime check rather than a grep because Alpine ships the roots in
+  `libnode.so`, and pi's JavaScript bundle inherits whatever Node trusts.
+  `bun build --compile` executables keep the runtime they were built with, so
+  this only holds for an image rebuilt after 2026-10-23.
 - opencode: fetched with `curl | bash`, not checksum-verified. Acceptable
   tradeoff; Tier 2 shows the stricter alternative (release tarball + sha256).
-- omp: `curl | sh` installer, but binary mode verifies the build service's
-  sha256 before installing and smoke-tests the binary. The trust anchor is
-  `build.stencil.so` rather than GitHub releases — same class of risk as
-  opencode, with a checksum instead of none.
+- pi: `curl | sh` from pi.dev, then a managed install that pins every
+  dependency through pi's `npm-shrinkwrap.json` and verifies the installed
+  version against the release metadata before activating it. The script and the
+  metadata are TLS-only, so the trust anchor is pi.dev — same class of risk as
+  opencode. pi is a Node program, so its TLS (and MCP/fetch traffic) uses
+  Node's embedded roots, which is why the Node assertion above exists.
 - agent-browser: likewise a `curl` of an unverified release binary. Same class
   of risk as the opencode installer, no worse.
 - agent-browser trust store (eMudhra, **unresolved**): the linux-musl release
@@ -225,8 +230,8 @@ Residual concerns worth remembering:
   container — so T1 (PAT exfiltration) gains a second, very literal route: the
   agent can drive a browser to POST the PAT to an attacker's endpoint. Fixing T1
   fixes both routes; nothing about the browser makes it worse than the shell.
-- Image grew 362 MB → 1.14 GB, and chromium is the bulk of that. Monthly
-  rebuilds (Tier 1.3) now matter more, not less.
+- Image is ~1.55 GB: chromium is the bulk of that, and Node.js + npm add
+  ~60 MB for pi. Monthly rebuilds (Tier 1.3) matter more, not less.
 - No ad/tracker blocking. A browsing agent talks to third-party ad networks on
   most real pages, which both leaks the agent's egress IP and hands remote
   servers a JS execution context. Consider `--host-resolver-rules` or a proxy
@@ -305,15 +310,16 @@ container is recreated. ✅ (was: unbounded pids and logs)
       (`opencode.ai/v2/install`). Previously the bare `opencode.ai/install`
       URL — the V1 channel — which had quietly become a downgrade trap: the
       sandbox sat on V2 while a rebuild would install 1.19.0.
-- [x] omp (oh-my-pi) added alongside opencode, installed from its
-      sha256-verified musl binary and sharing `/workspace` + the PAT.
+- [x] pi added alongside opencode, installed from pi.dev's managed installer
+      into `/opt/pi` (outside `$HOME`, so the `~/.pi` volume can never mask the
+      release) and sharing `/workspace` + the PAT.
 - [x] headless browsing via agent-browser + Alpine chromium, registered as an
-      MCP server in the global opencode config
+      MCP server in the global opencode config and in pi's `mcp.json`
 - [x] eMudhra CA response (2026-10-27): base re-pinned, `apk upgrade` on build,
       `ca-certificates(-bundle)` explicit, NSS 3.131.1 root removals asserted,
       and embedded-store floors (opencode 2.2.0 / Bun 1.4.4 / uv 0.13.4).
 - [x] chat history persisted for both agents in named volumes
-      (`opencode_data`, `opencode_state`, `omp_data`) — see T2b.
+      (`opencode_data`, `opencode_state`, `pi_data`) — see T2b.
 
 ### Tier 1 — cheap, high value (next)
 
@@ -333,7 +339,7 @@ container is recreated. ✅ (was: unbounded pids and logs)
 5. **Backups.** `work` plus the three history volumes:
    `docker run --rm -v opencode_work:/data -v "$PWD:/backup" alpine tar czf /backup/work-$(date +%F).tgz -C /data .`
    (same shape for `opencode_opencode_data`, `opencode_opencode_state`,
-   `opencode_omp_data` — run before risky agent sessions; keep the last N).
+   `opencode_pi_data` — run before risky agent sessions; keep the last N).
 
 ### Tier 2 — medium effort, structural
 
@@ -353,8 +359,9 @@ container is recreated. ✅ (was: unbounded pids and logs)
    server install writes to $HOME).
 3. **Verify the agent installs instead of `curl | bash`.** Download the pinned
    opencode release tarball from GitHub with a `sha256sum` check in the
-   Dockerfile. omp already ships a sha256-checked binary installer, but the
-   installer script itself is still fetched over TLS.
+   Dockerfile. pi's managed installer pins dependencies via `npm-shrinkwrap.json`
+   and verifies the release version, but the installer script itself is still
+   fetched over TLS.
 4. **git credential helper instead of static askpass** — inject the PAT only
    during `git fetch/push` via a helper that reads the secret at use-time
    (marginal: the file is already tmpfs-mounted; do it only alongside 2.1).
@@ -409,36 +416,40 @@ docker compose exec sudeep-agent bash -c 'for i in 1 2 3; do (while true; do :; 
 
 # 8. Toolchain versions + browser wiring:
 docker compose exec sudeep-agent bash -lc \
-  'opencode --version; omp --version; agent-browser --version; chromium-browser --version'
+  'opencode --version; pi --version; agent-browser --version; chromium-browser --version'
 docker compose exec sudeep-agent bash -lc 'echo "$AGENT_BROWSER_EXECUTABLE_PATH | $AGENT_BROWSER_ARGS"'
-#   expect: opencode 2.x, omp/18.x, agent-browser 0.x, Chromium 1xx,
+#   expect: opencode 2.x, pi 1.x, agent-browser 0.x, Chromium 1xx,
 #           then /usr/bin/chromium-browser | --no-sandbox,...
 
 # 9. Headless browsing actually works end-to-end:
 docker compose exec sudeep-agent bash -lc \
   'agent-browser open https://example.com && agent-browser snapshot -i && agent-browser close'
 
-# 10. agent-browser MCP server connected:
+# 10. agent-browser MCP server connected (the same server is registered for
+#     both agents: opencode.global.json and ~/.pi/agent/mcp.json):
 #     NB: the first call after a fresh `up -d` races the MCP handshake and can
 #     return an empty list while the server is still spawning — retry.
 docker compose exec sudeep-agent bash -lc \
-  'cd /workspace && opencode api get /api/mcp; sleep 3; opencode api get /api/mcp'
-#   expect: agent-browser with status "connected"
+  'cd /workspace && pi mcp list; opencode api get /api/mcp; sleep 3; opencode api get /api/mcp'
+#   expect: pi lists agent-browser as connected, opencode returns status
+#   "connected"
 #   (NOT `opencode mcp list` — that reports "No MCP servers configured" even
 #    when connected; CLI display quirk seen since 2.0.26)
 
 # 11. History volumes mounted, owned by sudeep, and writable:
 docker compose exec sudeep-agent bash -lc \
-  'ls -ld ~/.local/share/opencode ~/.local/state/opencode ~/.omp
-   for d in ~/.local/share/opencode ~/.local/state/opencode ~/.omp; do
+  'ls -ld ~/.local/share/opencode ~/.local/state/opencode ~/.pi/agent
+   for d in ~/.local/share/opencode ~/.local/state/opencode ~/.pi/agent; do
      touch "$d/.write-test" && rm "$d/.write-test" && echo "writable: $d"; done'
 #   expect: sudeep-owned dirs and a writable line for all three
+#   (also: `ls /opt/pi/agent/bin/pi` exists in the image layer, NOT on a volume,
+#    so a rebuild upgrades pi instead of serving a stale volume copy)
 
 # 12. History survives a recreate (it would NOT survive `down -v`):
-docker compose exec sudeep-agent sh -c 'echo persisted > ~/.omp/.persist-test'
+docker compose exec sudeep-agent sh -c 'echo persisted > ~/.pi/agent/.persist-test'
 docker compose up -d --force-recreate
-docker compose exec sudeep-agent cat ~/.omp/.persist-test   # expect: persisted
-docker compose exec sudeep-agent rm ~/.omp/.persist-test
+docker compose exec sudeep-agent cat ~/.pi/agent/.persist-test   # expect: persisted
+docker compose exec sudeep-agent rm ~/.pi/agent/.persist-test
 ```
 
 Expected end state: every line above matches the comment. Any mismatch →
@@ -450,9 +461,10 @@ something regressed in `docker-compose.yaml` / `Dockerfile`.
 
 - PAT is readable by anything the agent executes (T1) until Tier 1.1 + 2.1 land.
   The browser gives T1 a second, more literal route (T3b); the fix is the same.
-- `curl | bash` installer for opencode, `curl | sh` installer for omp (its
-  binary is sha256-verified; the script is not), unverified release binary for
-  agent-browser (T3) — fetched over TLS, not pinned end-to-end.
+- `curl | bash` installer for opencode and `curl | sh` installer for pi (its
+  dependencies are pinned by `npm-shrinkwrap.json`; the script is not), and an
+  unverified release binary for agent-browser (T3) — all fetched over TLS, not
+  pinned end-to-end.
 - Chat history and provider credentials persist in named volumes and are
   readable by the agent (T2b); no automatic rotation or encryption at rest.
 - Chromium's own sandbox is off (T3b). Acceptable inside the container boundary,

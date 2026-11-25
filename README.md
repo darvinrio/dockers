@@ -1,7 +1,7 @@
 # Repo of Dockers
 
 - `hermes.yaml` — Hermes agent
-- `opencode/docker-compose.yaml` — opencode + omp (oh-my-pi) sandbox
+- `opencode/docker-compose.yaml` — opencode + pi sandbox
 
 ## Commands
 

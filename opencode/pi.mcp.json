@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "agent-browser": {
+      "command": "agent-browser",
+      "args": ["mcp"],
+      "description": "Headless Chromium: open pages, snapshot the accessibility tree, click, fill forms, take screenshots."
+    }
+  }
+}

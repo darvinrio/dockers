@@ -4,11 +4,16 @@
 # eMudhra trust-store checks below are unchanged from the 2026-10-27 pin.
 FROM alpine:3.24@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
 
-# Install git, openssh-client, bash, curl+tar for the opencode/omp installers,
+# Install git, openssh-client, bash, curl+tar for the opencode/pi installers,
 # and dropbear for SSH access (runs as sudeep, needs no capabilities)
 # chromium + a font set back agent-browser's headless browsing — fontconfig
 # alone leaves screenshots full of tofu boxes for anything outside opensans
 # (libstdc++/libgcc are runtime deps of the opencode binary)
+#
+# nodejs + npm are Pi's runtime (it needs Node >= 22.19 and npm). Alpine's musl
+# build is the only usable Node here — nodejs.org's official tarballs are
+# glibc-linked. npm lives in the "community" repo and has to be >= 11.6 for the
+# pi installer's --min-release-age flag.
 #
 # Upgrade the pinned base first: a stale digest also means a stale
 # ca-certificates bundle, and TLS clients here do not consult revocation lists,
@@ -35,6 +40,8 @@ RUN apk upgrade --no-cache \
     chromium \
     font-dejavu \
     font-liberation \
+    nodejs \
+    npm \
     && rm -rf /var/cache/apk/* \
     && [ ! -e /usr/share/ca-certificates/mozilla/emSign_ECC_Root_CA_-_G3.crt ] \
     && [ ! -e /usr/share/ca-certificates/mozilla/emSign_Root_CA_-_C1.crt ] \
@@ -49,6 +56,11 @@ RUN chmod 0755 /usr/local/bin/gh-askpass /usr/local/bin/sandbox-entry \
 
 # Create a non-root user named "sudeep"
 RUN adduser -D -s /bin/bash sudeep
+
+# Pi's release is installed here, outside $HOME: ~/.pi becomes a named volume at
+# runtime, and a volume would mask a release baked into the image, pinning pi to
+# whatever version the volume was first created with.
+RUN mkdir -p /opt/pi && chown sudeep:sudeep /opt/pi
 
 # Workspace mount point must be owned by sudeep so the named volume inherits it
 RUN mkdir -p /workspace && chown sudeep:sudeep /workspace
@@ -73,30 +85,29 @@ RUN attempt=0; until curl -fsSL https://opencode.ai/v2/install | bash -s -- --no
     && /home/sudeep/.opencode/bin/opencode --version
 ENV PATH="/home/sudeep/.opencode/bin:${PATH}"
 
-# Install omp (oh-my-pi) CLI (latest; untrusted-within-sandbox is fine by
-# design). --binary asks for the prebuilt musl build explicitly rather than
-# relying on the installer's default; the installer checks the build service's
-# sha256 and smoke-tests the binary. libstdc++/libgcc installed above are its
-# dynamic runtime deps on musl. PI_INSTALL_DIR is explicit so the install path
-# cannot depend on HOME being set the way the installer assumes.
-# Retried because the build service is a single external dependency.
-RUN attempt=0; until curl -fsSL -o /tmp/omp-install.sh https://omp.sh/install \
-        && PI_INSTALL_DIR=/home/sudeep/.local/bin sh /tmp/omp-install.sh --binary; do \
+# Install pi (latest; untrusted-within-sandbox is fine by design). The managed
+# installer pins dependencies with pi's npm-shrinkwrap and verifies the release
+# metadata. Retried because pi.dev and the npm registry are external deps.
+# PI_CODING_AGENT_DIR retargets the build-time install to /opt/pi/agent so the
+# release itself never sits under ~/.pi (see /opt/pi above). At runtime the
+# variable is unset, so pi reads settings/auth/sessions from ~/.pi/agent.
+RUN attempt=0; until curl -fsSL -o /tmp/pi-install.sh https://pi.dev/install.sh \
+        && PI_CODING_AGENT_DIR=/opt/pi/agent sh /tmp/pi-install.sh; do \
         attempt=$((attempt + 1)); \
         [ "$attempt" -ge 3 ] && exit 1; \
-        echo "omp install failed (attempt $attempt), retrying in 5s..." >&2; \
+        echo "pi install failed (attempt $attempt), retrying in 5s..." >&2; \
         sleep 5; \
     done \
-    && rm -f /tmp/omp-install.sh \
-    && /home/sudeep/.local/bin/omp --version
+    && rm -f /tmp/pi-install.sh \
+    && /opt/pi/agent/bin/pi --version
 
 # Mount points for the compose named volumes. They must exist in the image and
 # be owned by sudeep: Docker copies the directory's ownership into a new named
 # volume on first use, and a missing path would leave the volume root owned by
-# root, so opencode/omp could not write their session data.
+# root, so opencode/pi could not write their session data.
 RUN mkdir -p /home/sudeep/.local/share/opencode \
              /home/sudeep/.local/state/opencode \
-             /home/sudeep/.omp
+             /home/sudeep/.pi/agent
 
 # Install agent-browser (native Rust CLI) from its release binary: the npm
 # package is a `#!/usr/bin/env node` shim and this image ships no node.
@@ -132,14 +143,17 @@ RUN UV_NO_MODIFY_PATH=1 curl -LsSf https://astral.sh/uv/install.sh | sh \
     && /home/sudeep/.local/bin/uv --version
 
 # The system ca-certificates bundle above does not reach tools that ship their
-# own trust store: opencode is Bun-compiled, and both Bun and uv embed CA lists.
+# own trust store: opencode is Bun-compiled, Node embeds its own root list, and
+# both Bun and uv embed CA lists.
 #   - Bun < 1.4.4 trusts the compromised eMudhra roots (GHSA-26q8-h657-pf84);
 #     opencode 2.2.0 is the first release built with Bun 1.4.4.
 #   - uv < 0.13.4 has the same problem (GHSA-hq85-5cpj-mr62).
 # Enforce the patched floors so a channel rollback fails the build instead of
 # silently shipping a toolchain that accepts forged certificates. The binary
 # checks are the real assertion: they look for the removed root name in the
-# compiled-in bundle, so they also catch an opencode/omp rebuild on an old Bun.
+# compiled-in bundle, so they also catch an opencode/pi rebuild on an old
+# Node/Bun. Node's check asks the running binary for its roots instead of
+# grepping it, because Alpine splits those out into libnode.so.
 RUN set -eu; \
     ge() { \
         awk -v a="$1" -v b="$2" 'BEGIN { \
@@ -153,7 +167,10 @@ RUN set -eu; \
     ver=$(/home/sudeep/.opencode/bin/opencode --version | awk '{print $NF}'); ver=${ver#v}; \
     ge "$ver" 2.2.0 || { echo "opencode $ver predates the eMudhra trust-store fix" >&2; exit 1; }; \
     ! grep -q "emSign ECC Root CA - G3" /home/sudeep/.opencode/bin/opencode; \
-    ! grep -q "emSign ECC Root CA - G3" /home/sudeep/.local/bin/omp; \
+    node -e 'var roots = require("node:tls").rootCertificates; if (roots.some(function (c) { return c.indexOf("emSign ECC Root CA - G3") !== -1; })) process.exit(1)' \
+        || { echo "node's embedded root store still contains emSign ECC Root CA - G3" >&2; exit 1; }; \
+    ver=$(/opt/pi/agent/bin/pi --version | awk '{print $NF}'); ver=${ver#v}; \
+    ge "$ver" 1.0.0 || { echo "pi $ver predates built-in MCP support" >&2; exit 1; }; \
     ver=$(/home/sudeep/.bun/bin/bun --version); \
     ge "$ver" 1.4.4 || { echo "bun $ver predates the eMudhra trust-store fix" >&2; exit 1; }; \
     ver=$(/home/sudeep/.local/bin/uv --version | awk '{print $2}'); \
@@ -170,15 +187,20 @@ RUN mkdir -p /home/sudeep/.ssh && chmod 700 /home/sudeep/.ssh
 # "agent-browser" server by defining it in their own opencode.json.
 COPY opencode.global.json /home/sudeep/.config/opencode/opencode.json
 
+# Same server for pi, from pi's user-level MCP file (~/.pi/agent/mcp.json).
+# Projects override it with a .pi/mcp.json entry of the same name, which pi only
+# reads after project trust is granted.
+COPY pi.mcp.json /home/sudeep/.pi/agent/mcp.json
+
 # Symlink system-wide since login shells reset PATH via /etc/profile
 USER root
 RUN ln -s /home/sudeep/.opencode/bin/opencode /usr/local/bin/opencode \
-    && ln -s /home/sudeep/.local/bin/omp /usr/local/bin/omp \
+    && ln -s /opt/pi/agent/bin/pi /usr/local/bin/pi \
     && ln -s /home/sudeep/.bun/bin/bun /usr/local/bin/bun \
     && ln -s /home/sudeep/.local/bin/uv /usr/local/bin/uv \
     && ln -s /home/sudeep/.local/bin/uvx /usr/local/bin/uvx \
     && ln -s /home/sudeep/.local/bin/agent-browser /usr/local/bin/agent-browser \
-    && chown -R sudeep:sudeep /home/sudeep/.config
+    && chown -R sudeep:sudeep /home/sudeep/.config /home/sudeep/.pi
 USER sudeep
 
 # Set the default shell

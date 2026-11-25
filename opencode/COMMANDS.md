@@ -1,6 +1,6 @@
 # COMMANDS.md — opencode sandbox quick reference
 
-Dockerized dev sandbox: Alpine + git + opencode CLI + omp (oh-my-pi) CLI + bun +
+Dockerized dev sandbox: Alpine + git + opencode CLI + pi CLI + Node.js + bun +
 uv + agent-browser (headless Chromium) + dropbear SSH (key-only, port 2222).
 Container user `sudeep`, work volume at `/workspace`, GitHub PAT at `/run/secrets/github_pat`.
 Chat history for both agents lives in named volumes, so it survives rebuilds.
@@ -8,7 +8,7 @@ Chat history for both agents lives in named volumes, so it survives rebuilds.
 ## Build & run
 
 ```sh
-docker compose build --pull --no-cache   # build image (installs latest opencode, omp, bun, uv, agent-browser)
+docker compose build --pull --no-cache   # build image (installs latest opencode, pi, bun, uv, agent-browser)
 docker compose up -d                     # start persistent container (SSH daemon host)
 docker compose down                      # stop & remove container (volumes survive)
 ```
@@ -16,7 +16,7 @@ docker compose down                      # stop & remove container (volumes surv
 Components are installed by the Dockerfile at build time. A plain
 `docker compose build` reuses cached layers and therefore keeps whatever was
 current when those layers were first built — use `--no-cache` when you actually
-want newer opencode/omp/bun/uv/agent-browser. `--pull` alone does nothing here
+want newer opencode/pi/bun/uv/agent-browser. `--pull` alone does nothing here
 because the base image is pinned by digest.
 
 ## Shells inside the container
@@ -37,7 +37,7 @@ logins survive `docker compose down`, `up --force-recreate` and image rebuilds
 |--------|----------------|-------|
 | `opencode_opencode_data` | `~/.local/share/opencode` | `opencode.db` (sessions/messages/credentials), `storage/`, `snapshot/`, `tool-output/`, `shell/`, `log/` |
 | `opencode_opencode_state` | `~/.local/state/opencode` | prompt/up-arrow history, last model, TUI tabs, frecency, lock/heartbeat dirs |
-| `opencode_omp_data` | `~/.omp` | omp session JSONL + blobs, `agent/config.yml`, provider credentials, logs |
+| `opencode_pi_data` | `~/.pi` | pi agent dir: session JSONL, `settings.json`, `mcp.json`, `auth.json` (provider credentials), package installs |
 
 Still ephemeral (rebuilt from the image every time): `~/.config/opencode`
 (including `opencode.global.json`), `~/.opencode/bin`, `~/.local/bin`,
@@ -50,29 +50,35 @@ docker run --rm -v opencode_opencode_data:/data -v "$PWD:/backup" alpine:3.24 \
   tar czf /backup/opencode-data-$(date +%F).tgz -C /data .
 docker run --rm -v opencode_opencode_state:/data -v "$PWD:/backup" alpine:3.24 \
   tar czf /backup/opencode-state-$(date +%F).tgz -C /data .
-docker run --rm -v opencode_omp_data:/data -v "$PWD:/backup" alpine:3.24 \
-  tar czf /backup/omp-data-$(date +%F).tgz -C /data .
+docker run --rm -v opencode_pi_data:/data -v "$PWD:/backup" alpine:3.24 \
+  tar czf /backup/pi-data-$(date +%F).tgz -C /data .
 ```
 
 Reset one agent without touching the other:
 
 ```sh
 docker compose down
-docker volume rm opencode_opencode_data opencode_opencode_state   # or opencode_omp_data
+docker volume rm opencode_opencode_data opencode_opencode_state   # or opencode_pi_data
 docker compose up -d
 ```
 
 Notes:
 
 - opencode V2 stores credentials in `opencode.db`, so persisting history also
-  persists logins. omp keeps credentials under `~/.omp`. Both volumes are
-  readable by the agent — treat their contents as sensitive (transcripts can
+  persists logins. pi keeps credentials in `~/.pi/agent/auth.json`. Both volumes
+  are readable by the agent — treat their contents as sensitive (transcripts can
   contain code, tokens and PII).
 - Named volumes, not host bind mounts: SQLite locking/fsync against VirtioFS is
   slow and error-prone.
 - Docker initializes a new volume from the image path on first use; the
   Dockerfile pre-creates the three paths owned by `sudeep` so the volume root is
   writable.
+- pi itself is **not** on a volume: the release lives in `/opt/pi/agent` in the
+  image layer, so `docker compose build --no-cache` actually upgrades it. The
+  volume only holds pi's config/auth/sessions.
+- Upgrading from the old omp image: the `opencode_omp_data` volume is left
+  orphaned. omp sessions are not readable by pi, so just
+  `docker volume rm opencode_omp_data`.
 - `docker compose down -v` wipes the `work` volume too — do not use it casually.
 
 ## SSH access (from the Mac)
@@ -129,36 +135,42 @@ it by accident and the next `docker compose build` silently replaces V2 with
 V1. If `opencode --version` ever reports `1.x`, check the install URL in
 `Dockerfile`.
 
-## omp CLI (inside container)
+## pi CLI (inside container)
 
-omp (oh-my-pi) is installed alongside opencode from its official installer
-(`https://omp.sh/install`, prebuilt musl binary, sha256-verified). It is the
-second agent in this sandbox and shares `/workspace` and the GitHub PAT.
+pi is installed alongside opencode from its official installer
+(`https://pi.dev/install.sh`). It is a Node.js program (this image ships Alpine's
+`nodejs` + `npm`) and shares `/workspace` and the GitHub PAT.
 
 ```sh
-omp                      # TUI in a project dir
-omp --continue           # resume the most recent session for this directory
-omp --resume             # pick a session
-omp --version
-omp update               # self-update (container layer only; lost on recreate)
+pi                       # TUI in a project dir
+pi -c                    # continue the most recent session for this directory
+pi -r                    # pick a session to resume
+pi --version
+pi -p "summarize this repo"   # print mode, one-off, no TUI
+pi mcp list              # check MCP servers (agent-browser)
+pi update                # WILL FAIL: the release is root-owned in /opt/pi — rebuild instead
 ```
 
-Sessions and config live in `~/.omp/agent/` (`sessions/`, `blobs/`,
-`config.yml`, provider credentials) and are persisted by the `omp_data` volume.
-Log in to providers with `/login` inside the TUI. Shell completions:
-`eval "$(omp completions bash)"`.
+Sessions, `settings.json`, `mcp.json` and `auth.json` live in `~/.pi/agent/` and
+are persisted by the `pi_data` volume. Log in to providers with `/login` inside
+the TUI; `/mcp` inspects or reloads MCP servers; `/reload` re-reads config.
+
+The **release** itself is under `/opt/pi/agent` (image layer, not the volume), on
+purpose: a volume at `~/.pi` would mask a freshly baked version and pin pi to
+whatever it was the first day. Consequence: upgrades are image rebuilds, and
+`pi update` cannot write there.
 
 The binary is unpinned: `docker compose build --no-cache` fetches whatever
-release is current. `omp update` upgrades only the running container — rebuild
-the image if you want it permanent.
+release is current.
 
 ## agent-browser (headless browsing, inside container)
 
 Native Rust CLI driving Alpine's `chromium` over CDP. Available two ways:
 
 - **as MCP tools** — `agent-browser` is registered in the global opencode config
-  (`opencode.global.json` → `~/.config/opencode/opencode.json`), so every project
-  gets `agent_browser_*` tools (snapshot / click / fill / screenshot / …)
+  (`opencode.global.json` → `~/.config/opencode/opencode.json`) and in pi's
+  user-level MCP config (`pi.mcp.json` → `~/.pi/agent/mcp.json`), so every
+  project gets browser tools (snapshot / click / fill / screenshot / …)
 - **as a CLI** — for when you want it by hand
 
 ```sh
@@ -176,7 +188,7 @@ Typical loop: `open` → `snapshot -i` → act on `@refs` → re-snapshot.
 
 | Piece | Value | Why |
 |-------|-------|-----|
-| Binary | `agent-browser-linux-musl-{arm64,x64}` from GitHub releases | The npm package is a `#!/usr/bin/env node` shim; this image ships no node |
+| Binary | `agent-browser-linux-musl-{arm64,x64}` from GitHub releases | The npm package is a `#!/usr/bin/env node` shim; the native binary has no runtime deps and is what the MCP config points at (node now exists for pi, but the native binary is still the right choice) |
 | Browser | Alpine's `chromium` package | `agent-browser install` fetches Chrome for Testing, which is **glibc-only** and cannot run on musl |
 | `AGENT_BROWSER_EXECUTABLE_PATH` | `/usr/bin/chromium-browser` | Points agent-browser at the distro chromium |
 | `AGENT_BROWSER_ARGS` | `--no-sandbox,--disable-dev-shm-usage,--disable-gpu` | See below |
@@ -199,11 +211,15 @@ need CJK screenshots, add a font package to the `apk add` list and rebuild.
 ### Check the MCP wiring
 
 ```sh
+pi mcp list
+# agent-browser: connected, N tools
+
 opencode api get /api/mcp
 # {"location":{"directory":"..."},"data":[{"name":"agent-browser","status":{"status":"connected"}}]}
 ```
 
-Two gotchas:
+For pi, `pi mcp list` exits 1 if an enabled server fails to connect, so it works
+as a script check. Two opencode gotchas:
 
 - The **first** call after a fresh `up -d` races the MCP handshake and can
   return an empty list while the server is still spawning. Re-run it.
@@ -211,9 +227,12 @@ Two gotchas:
   connected — a CLI display quirk seen since 2.0.26. Use `/api/mcp` (above) or
   the log line `mcp connected server=agent-browser tools=29` to confirm.
 
-To change the server config, edit `opencode.global.json` in this repo and
-rebuild. A project can override the `agent-browser` entry by declaring the same
-server name in its own `opencode.json`.
+To change the server config, edit `opencode.global.json` / `pi.mcp.json` in this
+repo and rebuild. A project can override the `agent-browser` entry by declaring
+the same server name in its own `opencode.json` (opencode) or `.pi/mcp.json`
+(pi, only read in trusted projects). Inside pi, `/mcp` can also add, disable or
+reload servers without a rebuild; `pi mcp add agent-browser -- agent-browser mcp`
+does the same from the shell.
 
 ## bun & uv (inside container)
 
@@ -221,7 +240,7 @@ server name in its own `opencode.json`.
 bun --version && uv --version     # both symlinked into /usr/local/bin
 ```
 
-Versions are unpinned — each build installs the latest opencode, omp, bun, uv
+Versions are unpinned — each build installs the latest opencode, pi, bun, uv
 and agent-browser. Those installer layers are cached, so a plain
 `docker compose build` keeps the versions from the first build; use
 `docker compose build --no-cache` to actually pick up new upstream releases.
@@ -236,7 +255,8 @@ The base image pin does not move by itself: the digest in `Dockerfile` needs a
 deliberate bump when Alpine cuts a new image (check with
 `docker buildx imagetools inspect alpine:3.24`). The build also fails if a
 bundled CA store is older than the eMudhra fix (opencode 2.2.0 / Bun 1.4.4 /
-uv 0.13.4) or if the opencode/omp binaries still contain a removed root, so a
+uv 0.13.4 / Node's own `tls.rootCertificates`), if the opencode binary still
+contains a removed root, or if pi is older than 1.0 (no built-in MCP), so a
 failed build means the upstream channel rolled back, not that your machine is
 broken.
 
